@@ -1,0 +1,207 @@
+import json
+import os
+import folium
+import pandas as pd
+import numpy as np
+import scipy.signal as signal
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+# ==========================================
+# 1. INDEPENDENT SEISMIC SIGNAL & PSD ANALYSIS
+# ==========================================
+
+def run_standalone_psd_analysis():
+    print("=== PSD Spectral Analysis Module ===")
+    file_path = input("Enter the path to the CSV file with the seismogram (or press Enter for demo mode): ").strip()
+    
+    # Try to load real data or generate mock signals
+    if file_path and os.path.exists(file_path):
+        try:
+            df_signal = pd.read_csv(file_path, sep=None, engine="python")
+            df_signal.columns = df_signal.columns.str.strip()
+            # Expecting 'time' and 'amplitude' columns in the CSV
+            t = df_signal['time'].values
+            seismogram = df_signal['amplitude'].values
+            # Automatically calculate sampling frequency
+            fs = 1.0 / np.mean(np.diff(t))
+            print(f" Successfully loaded file. Data points: {len(t)}, Sampling frequency: {fs:.2f} Hz")
+        except Exception as e:
+            print(f" Error reading file ({e}). Generating mock signal instead...")
+            t, seismogram, fs = generate_mock_signal()
+    else:
+        print(" Path not specified or file not found. Generating mock signal...")
+        t, seismogram, fs = generate_mock_signal()
+
+    # Calculate Power Spectral Density (PSD) using Welch's method
+    frequencies, psd = signal.welch(seismogram, fs, nperseg=min(256, len(seismogram)))
+
+    # Build interactive Plotly chart
+    fig = make_subplots(
+        rows=2, cols=1, 
+        subplot_titles=("Seismogram (Time Series)", "Power Spectral Density (PSD)")
+    )
+
+    # 1. Time Series Plot
+    fig.add_trace(go.Scatter(x=t, y=seismogram, mode='lines', name='Amplitude', line=dict(color='#2c3e50')), row=1, col=1)
+    fig.update_xaxes(title_text="Time (s)", row=1, col=1)
+    fig.update_yaxes(title_text="Velocity (counts)", row=1, col=1)
+
+    # 2. PSD Plot
+    fig.add_trace(go.Scatter(x=frequencies, y=10 * np.log10(psd), mode='lines', name='PSD', line=dict(color='#e74c3c')), row=2, col=1)
+    fig.update_xaxes(title_text="Frequency (Hz)", row=2, col=1)
+    fig.update_yaxes(title_text="Power (dB/Hz)", row=2, col=1)
+
+    fig.update_layout(height=700, width=900, showlegend=False, title_text="Seismic Signal PSD Analysis", title_x=0.5)
+    
+    # Render chart in a standalone browser window
+    print(" Rendering the interactive chart...")
+    fig.show()
+
+
+def generate_mock_signal():
+    """Generates a mock decaying wave with noise."""
+    fs = 100.0
+    t = np.arange(0, 10, 1/fs)
+    signal_wave = 5.0 * np.exp(-1.5 * t) * np.sin(2 * np.pi * 5.0 * t)
+    signal_wave += 2.0 * np.exp(-0.5 * t) * np.sin(2 * np.pi * 12.0 * t)
+    noise = np.random.normal(0, 0.3, size=len(t))
+    return t, (signal_wave + noise), fs
+
+
+# ==========================================
+# 2. MAP STYLING FUNCTIONS
+# ==========================================
+
+def get_fault_color(activity):
+    if not activity: return "#7f8c8d"
+    activity = activity.lower()
+    if "аномально высокая" in activity or "abnormally high" in activity: return "#d63031"
+    elif "высокая" in activity or "high" in activity: return "#e17055"
+    elif "умеренная" in activity or "средняя" in activity or "moderate" in activity or "medium" in activity: return "#fdcb6e"
+    else: return "#7f8c8d"
+
+def style_faults(feature):
+    return {"color": get_fault_color(feature["properties"].get("Activity_degree", "")), "weight": 3, "opacity": 0.75}
+
+def get_eq_color(ms):
+    if ms >= 7.0: return "#FF0000"
+    elif ms >= 5.5: return "#FF4500"
+    elif ms >= 4.0: return "#FF8C00"
+    else: return "#FFA500"
+
+
+# ==========================================
+# 3. MAP GENERATION (FOLIUM)
+# ==========================================
+
+def build_map():
+    print("\n=== Generating GIS Folium Map ===")
+    
+    # Load files
+    try:
+        with open(r"D:\data\MAP\ActiveFault.geojson", "r", encoding="utf-8") as f:
+            faults_data = json.load(f)
+        df_new_eq = pd.read_csv("C:/Users/matve/OneDrive/Desktop/earthquakes.csv", sep=None, engine="python")
+        df_stations = pd.read_csv(r"D:\data\MAP\points.csv", sep=None, engine="python")
+        
+        df_stations.columns = df_stations.columns.str.strip()
+        df_new_eq.columns = df_new_eq.columns.str.strip()
+        
+        for col in ["lat", "lon", "K"]:
+            if col in df_new_eq.columns and df_new_eq[col].dtype == "object":
+                df_new_eq[col] = df_new_eq[col].astype(str).str.replace(",", ".").astype(float)
+    except Exception as e:
+        print(f" Data loading error for map layers: {e}")
+        print("Please check file paths in your script.")
+        return
+
+    # Initialize map
+    m = folium.Map(location=[53.5, 106.0], zoom_start=6, tiles="OpenStreetMap")
+
+    # Faults Layer
+    faults_group = folium.FeatureGroup(name="Active Faults").add_to(m)
+    folium.GeoJson(
+        faults_data, style_function=style_faults,
+        popup=folium.GeoJsonPopup(
+            fields=["Name", "Activity_degree", "Slip_sense", "Potential_Ms_max"],
+            aliases=["Fault Name:", "Activity Degree:", "Slip Sense:", "Potential Ms max:"],
+            localize=True
+        )
+    ).add_to(faults_group)
+
+    # Earthquakes Layer
+    eq_csv_group = folium.FeatureGroup(name="Earthquakes from CSV (2020)").add_to(m)
+    date_col = df_new_eq.columns[0]
+    for idx, row in df_new_eq.iterrows():
+        lat, lon, k_val = row["lat"], row["lon"], row["K"]
+        ms_converted = round((k_val - 4.6) / 1.5, 1)
+        radius = max(ms_converted * 2.5, 3)
+        popup_html = f"""
+        <div style="font-family: sans-serif; font-size: 12px; min-width: 180px;">
+            <b>Date/Time:</b> {row[date_col]}<br>
+            <b>Class K:</b> {k_val}<br>
+            <b>Calculated Ms:</b> {ms_converted}<br>
+            <b>Coordinates:</b> {lat}, {lon}
+        </div>
+        """
+        folium.CircleMarker(
+            location=[lat, lon], radius=radius, fill=True,
+            color=get_eq_color(ms_converted), fill_color=get_eq_color(ms_converted),
+            fill_opacity=0.7, weight=1.2, popup=folium.Popup(popup_html, max_width=300)
+        ).add_to(eq_csv_group)
+
+    # Scientific Stations Layer
+    stations_group = folium.FeatureGroup(name="Scientific Stations").add_to(m)
+    for idx, row in df_stations.iterrows():
+        lat, lon = row['lat'], row['lon']
+        name = row.get('name', 'Unnamed')
+        alias = row.get('alias', '-') if not pd.isna(row.get('alias')) else "-"
+        methods = row.get('methods', 'Not specified') if not pd.isna(row.get('methods')) else "Not specified"
+        
+        station_popup_html = f"""
+        <div style="font-family: sans-serif; font-size: 12px; width: 250px;">
+            <h4 style="margin: 0 0 5px 0; color: #2980b9;">Station: {name}</h4>
+            <b>Alias:</b> {alias}<br>
+            <b>Methods:</b> {methods}<br>
+            <b>Coordinates:</b> {lat}, {lon}
+        </div>
+        """
+        folium.Marker(
+            location=[lat, lon],
+            popup=folium.Popup(station_popup_html, max_width=300),
+            tooltip=folium.Tooltip(f"Station: {name}", sticky=True),
+            icon=folium.Icon(color="blue", icon="info-sign")
+        ).add_to(stations_group)
+
+    # Controls and Map Legend
+    folium.LayerControl(position="topright").add_to(m)
+    legend_html = """
+    <div style="position: fixed; bottom: 50px; left: 50px; width: 260px; height: 230px; border:2px solid grey; z-index:9999; font-size:12px; background-color:white; opacity: 0.95; padding: 10px; font-family: sans-serif;">
+        <b>Fault Activity (lines):</b><br>
+        <span style="color:#d63031; font-weight:bold;">―</span> Abnormally High<br>
+        <span style="color:#e17055; font-weight:bold;">―</span> High<br>
+        <span style="color:#fdcb6e; font-weight:bold;">―</span> Moderate / Medium<br>
+        <br>
+        <b>Earthquakes (circles):</b><br>
+        <span style="display:inline-block; width:12px; height:12px; background:#FF0000; border-radius:50%;"></span> Great (Ms &ge; 7.0)<br>
+        <span style="display:inline-block; width:10px; height:10px; background:#FF4500; border-radius:50%;"></span> Strong (Ms 5.5-6.9)<br>
+        <span style="display:inline-block; width:8px; height:8px; background:#FF8C00; border-radius:50%;"></span> Moderate (Ms 4.0-5.4)<br>
+        <span style="display:inline-block; width:6px; height:6px; background:#FFA500; border-radius:50%;"></span> Weak (Ms &lt; 4.0)<br>
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(legend_html))
+    
+    m.save("tectonics_and_all_earthquakes.html")
+    print(" Map successfully saved to 'tectonics_and_all_earthquakes.html'")
+
+
+# ==========================================
+# MAIN EXECUTION ENTRY POINT
+# ==========================================
+if __name__ == "__main__":
+    # Step 1: Run isolated PSD plotting module
+    run_standalone_psd_analysis()
+    
+    # Step 2: Build the spatial map layers
+    build_map()
