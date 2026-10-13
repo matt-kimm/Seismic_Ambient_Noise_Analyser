@@ -21,7 +21,7 @@ pip install pandas numpy scipy folium plotly openpyxl
 
 The script expects the following local files and paths (update them in the code if needed):
 - `D:\data\MAP\ActiveFault.geojson` — GeoJSON file containing fault geometries and `Activity_degree` properties.
-- `C:/Users/matve/OneDrive/Desktop/earthquakes.csv` — CSV file with columns: `lat`, `lon`, `K`, and a timestamp column.
+- `D:\data\MAP\earthquakes.csv` — CSV file with columns: `lat`, `lon`, `K`, and a timestamp column.
 - `D:\data\MAP\points.csv` — CSV file containing observation stations with fields: `lat`, `lon`, `name`, `alias`, and `methods`.
 
 ## 🚀 Usage
